@@ -64,10 +64,10 @@ export function useLiveCalls() {
       sentiment_breakdown: bySentiment,
       calls_per_hour: Object.entries(hourMap).map(([hour, d]) => ({ hour, ...d })),
       resolution_funnel: [
-        { stage: "Recibidas", count: tc.length },
-        { stage: "Identificadas", count: identified },
-        { stage: "IA resolvió", count: resolved },
-        { stage: "Escaladas", count: escalated },
+        { stage: "Llamadas recibidas", count: tc.length },
+        { stage: "Cliente identificado", count: identified },
+        { stage: "Resueltas por IA", count: resolved },
+        { stage: "Derivadas a operador", count: escalated },
       ],
       top_actions: topActions,
       zones: Object.entries(zoneMap).map(([zone, d]) => ({ zone, ...d })).sort((a, b) => b.calls - a.calls),
@@ -80,8 +80,8 @@ export function useLiveCalls() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/seed", { method: "POST" })
-      .then(() => fetch("/api/calls"))
+    // Load initial data from server (which auto-seeds)
+    fetch("/api/calls")
       .then((r) => r.json())
       .then((data) => { setCalls(data.calls); recomputeStats(data.calls); })
       .catch(() => {});

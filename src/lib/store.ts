@@ -1,6 +1,8 @@
 import { CallEvent, DashboardStats } from "./types";
+import { generateInitialData } from "./mock-data";
 
-const calls: CallEvent[] = [];
+// Auto-seed so Railway/production always has data on startup
+const calls: CallEvent[] = generateInitialData(64);
 const listeners: Set<(event: CallEvent) => void> = new Set();
 
 export function addCall(call: CallEvent) {
@@ -34,11 +36,8 @@ export function getStats(): DashboardStats {
   const bySentiment = { positivo: 0, neutral: 0, negativo: 0 };
   todayCalls.forEach((c) => { byIntent[c.intent]++; bySentiment[c.sentiment]++; });
 
-  // Calls per hour with resolved/escalated breakdown
   const hourMap: Record<string, { count: number; resolved: number; escalated: number }> = {};
-  for (let h = 0; h < 24; h++) {
-    hourMap[`${h.toString().padStart(2, "0")}:00`] = { count: 0, resolved: 0, escalated: 0 };
-  }
+  for (let h = 0; h < 24; h++) hourMap[`${h.toString().padStart(2, "0")}:00`] = { count: 0, resolved: 0, escalated: 0 };
   todayCalls.forEach((c) => {
     const h = new Date(c.timestamp).getHours();
     const key = `${h.toString().padStart(2, "0")}:00`;
@@ -47,49 +46,29 @@ export function getStats(): DashboardStats {
     if (c.escalated_to_human) hourMap[key].escalated++;
   });
 
-  // Resolution funnel
   const resolutionFunnel = [
     { stage: "Llamadas recibidas", count: todayCalls.length },
-    { stage: "Identificadas", count: identified },
-    { stage: "IA resolvió", count: resolved },
-    { stage: "Escaladas", count: escalated },
+    { stage: "Cliente identificado", count: identified },
+    { stage: "Resueltas por IA", count: resolved },
+    { stage: "Derivadas a operador", count: escalated },
   ];
 
-  // Top Evalink actions
   const actionCount: Record<string, number> = {};
   todayCalls.forEach((c) => c.evalink_actions.forEach((a) => { actionCount[a] = (actionCount[a] || 0) + 1; }));
-  const topActions = Object.entries(actionCount)
-    .sort(([, a], [, b]) => b - a)
-    .slice(0, 8)
-    .map(([action, count]) => ({ action, count }));
+  const topActions = Object.entries(actionCount).sort(([, a], [, b]) => b - a).slice(0, 8).map(([action, count]) => ({ action, count }));
 
-  // Zones
   const zoneMap: Record<string, { calls: number; resolved: number }> = {};
   todayCalls.forEach((c) => {
     if (!zoneMap[c.zone]) zoneMap[c.zone] = { calls: 0, resolved: 0 };
     zoneMap[c.zone].calls++;
     if (c.resolved) zoneMap[c.zone].resolved++;
   });
-  const zones = Object.entries(zoneMap)
-    .map(([zone, d]) => ({ zone, ...d }))
-    .sort((a, b) => b.calls - a.calls);
 
-  // Alarm types
   const alarmMap: Record<string, number> = {};
-  todayCalls.forEach((c) => {
-    if (c.alarm_type) alarmMap[c.alarm_type] = (alarmMap[c.alarm_type] || 0) + 1;
-  });
-  const alarmTypes = Object.entries(alarmMap)
-    .map(([type, count]) => ({ type, count }))
-    .sort((a, b) => b.count - a.count);
+  todayCalls.forEach((c) => { if (c.alarm_type) alarmMap[c.alarm_type] = (alarmMap[c.alarm_type] || 0) + 1; });
 
-  // Avg duration by intent
   const intentDurations: Record<string, number[]> = { tecnica: [], operativa: [], otra: [] };
   todayCalls.forEach((c) => intentDurations[c.intent].push(c.duration_seconds));
-  const avgDurationByIntent = Object.entries(intentDurations).map(([intent, durations]) => ({
-    intent,
-    avg: durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0,
-  }));
 
   return {
     total_calls_today: todayCalls.length,
@@ -103,8 +82,11 @@ export function getStats(): DashboardStats {
     calls_per_hour: Object.entries(hourMap).map(([hour, d]) => ({ hour, ...d })),
     resolution_funnel: resolutionFunnel,
     top_actions: topActions,
-    zones,
-    alarm_types: alarmTypes,
-    avg_duration_by_intent: avgDurationByIntent,
+    zones: Object.entries(zoneMap).map(([zone, d]) => ({ zone, ...d })).sort((a, b) => b.calls - a.calls),
+    alarm_types: Object.entries(alarmMap).map(([type, count]) => ({ type, count })).sort((a, b) => b.count - a.count),
+    avg_duration_by_intent: Object.entries(intentDurations).map(([intent, durations]) => ({
+      intent,
+      avg: durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0,
+    })),
   };
 }
