@@ -7,7 +7,7 @@ export async function POST() {
     return NextResponse.json({ message: "Already seeded", count: getCalls().length });
   }
 
-  const mockCalls = generateInitialData(47);
+  const mockCalls = generateInitialData(64);
   mockCalls.reverse().forEach((call) => addCall(call));
 
   return NextResponse.json({ message: "Seeded", count: mockCalls.length });

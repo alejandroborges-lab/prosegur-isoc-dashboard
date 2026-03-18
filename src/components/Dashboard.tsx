@@ -2,224 +2,370 @@
 
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import {
+  AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+} from "recharts";
 import { useLiveCalls } from "@/hooks/use-live-calls";
-import { CallEvent } from "@/lib/types";
+import { CallEvent, DashboardStats } from "@/lib/types";
 
-// --- Utility ---
-function formatDuration(s: number): string {
-  const m = Math.floor(s / 60);
-  const sec = s % 60;
-  return `${m}:${sec.toString().padStart(2, "0")}`;
+// ─── Utils ────────────────────────────────────────────────────────
+function fmt(s: number): string {
+  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
 }
 
 function timeAgo(iso: string): string {
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60) return "ahora";
-  if (diff < 3600) return `hace ${Math.floor(diff / 60)}m`;
-  if (diff < 86400) return `hace ${Math.floor(diff / 3600)}h`;
-  return `hace ${Math.floor(diff / 86400)}d`;
+  const d = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (d < 60) return "ahora";
+  if (d < 3600) return `${Math.floor(d / 60)}m`;
+  if (d < 86400) return `${Math.floor(d / 3600)}h`;
+  return `${Math.floor(d / 86400)}d`;
 }
 
-function sentimentColor(s: string) {
-  if (s === "positivo") return { bg: "rgba(52,211,153,0.1)", text: "#34d399", border: "rgba(52,211,153,0.2)" };
-  if (s === "negativo") return { bg: "rgba(248,113,113,0.1)", text: "#f87171", border: "rgba(248,113,113,0.2)" };
-  return { bg: "rgba(161,161,170,0.1)", text: "#a1a1aa", border: "rgba(161,161,170,0.2)" };
-}
+const INTENT_COLORS: Record<string, string> = { tecnica: "#60a5fa", operativa: "#fbbf24", otra: "#71717a" };
+const SENT_COLORS: Record<string, string> = { positivo: "#34d399", neutral: "#a1a1aa", negativo: "#f87171" };
+const CHART_COLORS = ["#818cf8", "#60a5fa", "#34d399", "#fbbf24", "#f87171", "#a78bfa", "#fb923c", "#38bdf8"];
 
-function intentIcon(intent: string) {
-  if (intent === "tecnica") return "T";
-  if (intent === "operativa") return "O";
-  return "?";
-}
+function intentLabel(i: string) { return i === "tecnica" ? "Técnica" : i === "operativa" ? "Operativa" : "Otra"; }
 
-function intentLabel(intent: string) {
-  if (intent === "tecnica") return "Técnica";
-  if (intent === "operativa") return "Operativa";
-  return "Otra";
-}
-
-// --- Stat Pill ---
-function Stat({ label, value, sub, accent }: { label: string; value: string | number; sub?: string; accent?: string }) {
+// ─── Shared components ────────────────────────────────────────────
+function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; name: string; color: string }>; label?: string }) {
+  if (!active || !payload?.length) return null;
   return (
-    <div className="flex flex-col gap-1">
-      <span className="text-[11px] uppercase tracking-widest" style={{ color: "#71717a" }}>{label}</span>
-      <span className="text-[28px] font-light tracking-tight leading-none" style={{ color: accent || "#fafafa" }}>{value}</span>
-      {sub && <span className="text-[11px]" style={{ color: "#52525b" }}>{sub}</span>}
-    </div>
-  );
-}
-
-// --- Mini bar chart ---
-function MiniBar({ data, maxH = 40 }: { data: { label: string; value: number; color: string }[]; maxH?: number }) {
-  const max = Math.max(...data.map(d => d.value), 1);
-  return (
-    <div className="flex items-end gap-[3px]" style={{ height: maxH }}>
-      {data.map((d, i) => (
-        <div key={i} className="flex flex-col items-center gap-1">
-          <motion.div
-            initial={{ height: 0 }}
-            animate={{ height: (d.value / max) * maxH || 2 }}
-            transition={{ duration: 0.6, delay: i * 0.03 }}
-            style={{ width: 6, borderRadius: 3, background: d.color, minHeight: 2 }}
-          />
+    <div style={{ background: "#18181b", border: "1px solid #27272a", borderRadius: 8, padding: "8px 12px", fontSize: 11 }}>
+      <div style={{ color: "#71717a", marginBottom: 4 }}>{label}</div>
+      {payload.map((p, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <div style={{ width: 6, height: 6, borderRadius: 3, background: p.color }} />
+          <span style={{ color: "#a1a1aa" }}>{p.name}:</span>
+          <span style={{ color: "#fafafa", fontWeight: 500 }}>{p.value}</span>
         </div>
       ))}
     </div>
   );
 }
 
-// --- Call Row ---
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return <div className="text-[10px] uppercase tracking-[0.15em] mb-3" style={{ color: "#52525b" }}>{children}</div>;
+}
+
+function MetricCard({ label, value, accent, sub }: { label: string; value: string | number; accent?: string; sub?: string }) {
+  return (
+    <div style={{ padding: "16px 20px", background: "#111113", borderRadius: 12, border: "1px solid #1e1e22" }}>
+      <div className="text-[10px] uppercase tracking-[0.15em] mb-2" style={{ color: "#52525b" }}>{label}</div>
+      <div className="text-[32px] font-extralight tracking-tight leading-none" style={{ color: accent || "#fafafa" }}>{value}</div>
+      {sub && <div className="text-[11px] mt-1" style={{ color: "#3f3f46" }}>{sub}</div>}
+    </div>
+  );
+}
+
+// ─── Call Row ──────────────────────────────────────────────────────
 function CallRow({ call, onClick, isSelected }: { call: CallEvent; onClick: () => void; isSelected: boolean }) {
-  const sc = sentimentColor(call.sentiment);
   return (
     <motion.div
-      layout
-      initial={{ opacity: 0, y: -4 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -4 }}
-      transition={{ duration: 0.2 }}
-      onClick={onClick}
-      className="group cursor-pointer"
-      style={{
-        padding: "12px 16px",
-        borderBottom: "1px solid #1e1e22",
-        background: isSelected ? "#1f1f23" : "transparent",
-        transition: "background 0.15s",
-      }}
-      onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "#141416"; }}
+      layout initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}
+      onClick={onClick} className="cursor-pointer"
+      style={{ padding: "11px 20px", borderBottom: "1px solid #141416", background: isSelected ? "#1a1a1e" : "transparent", transition: "background 0.15s" }}
+      onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "#111113"; }}
       onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
     >
       <div className="flex items-center gap-3">
-        {/* Intent badge */}
-        <div
-          className="flex items-center justify-center shrink-0"
-          style={{
-            width: 28, height: 28, borderRadius: 7,
-            background: call.intent === "tecnica" ? "rgba(96,165,250,0.1)" : call.intent === "operativa" ? "rgba(251,191,36,0.1)" : "rgba(161,161,170,0.1)",
-            color: call.intent === "tecnica" ? "#60a5fa" : call.intent === "operativa" ? "#fbbf24" : "#a1a1aa",
-            fontSize: 11, fontWeight: 600,
-          }}
-        >
-          {intentIcon(call.intent)}
+        <div className="flex items-center justify-center shrink-0"
+          style={{ width: 28, height: 28, borderRadius: 7, background: `${INTENT_COLORS[call.intent]}15`, color: INTENT_COLORS[call.intent], fontSize: 11, fontWeight: 600 }}>
+          {call.intent[0].toUpperCase()}
         </div>
-
-        {/* Main info */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-[13px] font-medium truncate" style={{ color: "#fafafa" }}>
-              {call.caller_name || call.caller_phone}
-            </span>
-            {call.identified && (
-              <span className="text-[10px] px-[5px] py-[1px] rounded" style={{ background: "rgba(52,211,153,0.1)", color: "#34d399" }}>ID</span>
-            )}
-            {call.escalated_to_human && (
-              <span className="text-[10px] px-[5px] py-[1px] rounded" style={{ background: "rgba(248,113,113,0.1)", color: "#f87171" }}>Escalado</span>
-            )}
+            <span className="text-[13px] font-medium truncate">{call.caller_name || call.caller_phone}</span>
+            {call.identified && <span className="text-[9px] px-1 py-[1px] rounded" style={{ background: "#34d39915", color: "#34d399" }}>ID</span>}
+            {call.escalated_to_human && <span className="text-[9px] px-1 py-[1px] rounded" style={{ background: "#f8717115", color: "#f87171" }}>ESC</span>}
           </div>
-          <span className="text-[11px] truncate block" style={{ color: "#71717a" }}>{call.intent_detail}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] truncate" style={{ color: "#52525b" }}>{call.intent_detail}</span>
+            {call.zone && <span className="text-[10px]" style={{ color: "#3f3f46" }}>{call.zone}</span>}
+          </div>
         </div>
-
-        {/* Right side */}
-        <div className="flex items-center gap-3 shrink-0">
-          <span className="text-[11px] px-[6px] py-[2px] rounded" style={{ background: sc.bg, color: sc.text, border: `1px solid ${sc.border}` }}>
-            {call.sentiment}
-          </span>
-          <span className="text-[11px] tabular-nums" style={{ color: "#52525b" }}>{formatDuration(call.duration_seconds)}</span>
-          <span className="text-[11px]" style={{ color: "#3f3f46" }}>{timeAgo(call.timestamp)}</span>
+        <div className="flex items-center gap-2.5 shrink-0">
+          <div style={{ width: 5, height: 5, borderRadius: 3, background: call.resolved ? "#34d399" : call.escalated_to_human ? "#f87171" : "#fbbf24" }} />
+          <span className="text-[11px] tabular-nums" style={{ color: "#3f3f46" }}>{fmt(call.duration_seconds)}</span>
+          <span className="text-[10px] tabular-nums" style={{ color: "#27272a" }}>{timeAgo(call.timestamp)}</span>
         </div>
       </div>
     </motion.div>
   );
 }
 
-// --- Call Detail ---
+// ─── Call Detail Panel ────────────────────────────────────────────
 function CallDetail({ call, onClose }: { call: CallEvent; onClose: () => void }) {
-  const sc = sentimentColor(call.sentiment);
   return (
-    <motion.div
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: 20 }}
-      transition={{ duration: 0.2 }}
-      className="h-full overflow-y-auto"
-      style={{ borderLeft: "1px solid #1e1e22" }}
-    >
-      {/* Header */}
-      <div className="flex items-center justify-between" style={{ padding: "16px 20px", borderBottom: "1px solid #1e1e22" }}>
+    <motion.div initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 12 }}
+      className="h-full overflow-y-auto" style={{ borderLeft: "1px solid #1e1e22" }}>
+      <div className="flex items-center justify-between" style={{ padding: "14px 20px", borderBottom: "1px solid #1e1e22" }}>
         <div>
-          <div className="text-[15px] font-medium">{call.caller_name || "Desconocido"}</div>
-          <div className="text-[12px]" style={{ color: "#71717a" }}>{call.caller_phone}</div>
+          <div className="text-[14px] font-medium">{call.caller_name || "No identificado"}</div>
+          <div className="text-[11px] font-mono" style={{ color: "#52525b" }}>{call.caller_phone}</div>
         </div>
-        <button
-          onClick={onClose}
-          className="flex items-center justify-center"
-          style={{ width: 28, height: 28, borderRadius: 6, background: "#1f1f23", color: "#71717a", border: "none", cursor: "pointer", fontSize: 14 }}
-        >
-          &times;
-        </button>
+        <button onClick={onClose} style={{ width: 26, height: 26, borderRadius: 6, background: "#1f1f23", color: "#52525b", border: "none", cursor: "pointer", fontSize: 13 }}>&times;</button>
       </div>
 
-      {/* Meta grid */}
-      <div className="grid grid-cols-2 gap-4" style={{ padding: "20px" }}>
-        <div>
-          <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: "#52525b" }}>Estado</div>
-          <div className="flex items-center gap-1.5">
-            <div style={{ width: 6, height: 6, borderRadius: 3, background: call.resolved ? "#34d399" : call.escalated_to_human ? "#f87171" : "#fbbf24" }} />
-            <span className="text-[13px]">{call.resolved ? "Resuelto" : call.escalated_to_human ? "Escalado" : "Pendiente"}</span>
+      <div className="grid grid-cols-2 gap-3" style={{ padding: "16px 20px" }}>
+        {[
+          { l: "Estado", v: call.resolved ? "Resuelto por IA" : call.escalated_to_human ? "Escalado a humano" : "Pendiente",
+            c: call.resolved ? "#34d399" : call.escalated_to_human ? "#f87171" : "#fbbf24" },
+          { l: "Duración", v: fmt(call.duration_seconds) },
+          { l: "Intención", v: intentLabel(call.intent), c: INTENT_COLORS[call.intent] },
+          { l: "Sentimiento", v: call.sentiment, c: SENT_COLORS[call.sentiment] },
+          { l: "Zona", v: call.zone },
+          { l: "Latencia IA", v: `${call.latency_ms}ms`, c: call.latency_ms > 2000 ? "#f87171" : "#a1a1aa" },
+          ...(call.subscriber_id ? [{ l: "Abonado", v: call.subscriber_id, c: "#818cf8" }] : []),
+          ...(call.alarm_type ? [{ l: "Tipo alarma", v: call.alarm_type }] : []),
+        ].map((item, i) => (
+          <div key={i}>
+            <div className="text-[9px] uppercase tracking-[0.15em] mb-1" style={{ color: "#3f3f46" }}>{item.l}</div>
+            <div className="text-[12px]" style={{ color: item.c || "#a1a1aa" }}>{item.v}</div>
           </div>
-        </div>
-        <div>
-          <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: "#52525b" }}>Duración</div>
-          <span className="text-[13px] font-mono">{formatDuration(call.duration_seconds)}</span>
-        </div>
-        <div>
-          <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: "#52525b" }}>Intención</div>
-          <span className="text-[13px]">{intentLabel(call.intent)}</span>
-        </div>
-        <div>
-          <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: "#52525b" }}>Sentimiento</div>
-          <span className="text-[13px] px-[6px] py-[2px] rounded" style={{ background: sc.bg, color: sc.text }}>{call.sentiment}</span>
-        </div>
-        {call.subscriber_id && (
-          <div>
-            <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: "#52525b" }}>Abonado</div>
-            <span className="text-[13px] font-mono" style={{ color: "#818cf8" }}>{call.subscriber_id}</span>
-          </div>
-        )}
-        <div>
-          <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: "#52525b" }}>Run ID</div>
-          <span className="text-[11px] font-mono" style={{ color: "#52525b" }}>{call.workflow_run_id}</span>
-        </div>
+        ))}
       </div>
 
-      {/* Evalink actions */}
       {call.evalink_actions.length > 0 && (
-        <div style={{ padding: "0 20px 16px" }}>
-          <div className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "#52525b" }}>Acciones Evalink</div>
-          <div className="flex flex-col gap-1">
+        <div style={{ padding: "0 20px 14px" }}>
+          <div className="text-[9px] uppercase tracking-[0.15em] mb-2" style={{ color: "#3f3f46" }}>Pipeline Evalink</div>
+          <div className="flex items-center gap-1 flex-wrap">
             {call.evalink_actions.map((a, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <div style={{ width: 4, height: 4, borderRadius: 2, background: "#818cf8" }} />
-                <span className="text-[12px] font-mono" style={{ color: "#a1a1aa" }}>{a}</span>
-              </div>
+              <span key={i} className="flex items-center gap-1">
+                <span className="text-[11px] font-mono px-1.5 py-0.5 rounded" style={{ background: "#818cf815", color: "#818cf8" }}>
+                  {a.split(".")[1]}
+                </span>
+                {i < call.evalink_actions.length - 1 && <span style={{ color: "#27272a", fontSize: 10 }}>→</span>}
+              </span>
             ))}
           </div>
         </div>
       )}
 
-      {/* Summary */}
+      <div style={{ padding: "0 20px 14px" }}>
+        <div className="text-[9px] uppercase tracking-[0.15em] mb-2" style={{ color: "#3f3f46" }}>Resumen de la conversación</div>
+        <p className="text-[12px] leading-[1.6]" style={{ color: "#71717a" }}>{call.transcript_summary}</p>
+      </div>
+
       <div style={{ padding: "0 20px 20px" }}>
-        <div className="text-[10px] uppercase tracking-widest mb-2" style={{ color: "#52525b" }}>Resumen</div>
-        <p className="text-[13px] leading-relaxed" style={{ color: "#a1a1aa" }}>{call.transcript_summary}</p>
+        <div className="text-[9px] uppercase tracking-[0.15em] mb-1" style={{ color: "#27272a" }}>Run ID</div>
+        <div className="text-[10px] font-mono" style={{ color: "#27272a" }}>{call.workflow_run_id}</div>
       </div>
     </motion.div>
   );
 }
 
-// --- Main Dashboard ---
+// ─── Analytics View ───────────────────────────────────────────────
+function AnalyticsView({ stats }: { stats: DashboardStats }) {
+  const hourlyData = stats.calls_per_hour.filter((_, i) => i >= 6 && i <= 22);
+  const intentData = Object.entries(stats.calls_by_intent).map(([k, v]) => ({ name: intentLabel(k), value: v, fill: INTENT_COLORS[k] }));
+  const sentimentData = Object.entries(stats.sentiment_breakdown).map(([k, v]) => ({ name: k, value: v, fill: SENT_COLORS[k] }));
+
+  return (
+    <div className="flex-1 overflow-y-auto" style={{ padding: 24 }}>
+      {/* KPI row */}
+      <div className="grid grid-cols-6 gap-3 mb-6">
+        <MetricCard label="Llamadas hoy" value={stats.total_calls_today} />
+        <MetricCard label="Resolución IA" value={`${stats.auto_resolved_pct}%`} accent="#34d399" sub="sin intervención humana" />
+        <MetricCard label="Identificación auto." value={`${stats.auto_identified_pct}%`} accent="#818cf8" sub="por número de teléfono" />
+        <MetricCard label="Duración media" value={fmt(stats.avg_duration_seconds)} sub="por llamada" />
+        <MetricCard label="Escaladas" value={`${stats.escalated_pct}%`} accent={stats.escalated_pct > 20 ? "#f87171" : "#a1a1aa"} sub="derivadas a operador" />
+        <MetricCard label="Latencia IA" value={`${(stats.avg_latency_ms / 1000).toFixed(1)}s`} accent={stats.avg_latency_ms > 2000 ? "#fbbf24" : "#a1a1aa"} sub="tiempo de respuesta" />
+      </div>
+
+      {/* Row 2: Activity + Funnel */}
+      <div className="grid grid-cols-3 gap-3 mb-6">
+        {/* Hourly activity */}
+        <div className="col-span-2" style={{ background: "#111113", borderRadius: 12, border: "1px solid #1e1e22", padding: "16px 20px" }}>
+          <SectionLabel>Actividad por hora — resueltas vs escaladas</SectionLabel>
+          <ResponsiveContainer width="100%" height={180}>
+            <AreaChart data={hourlyData} margin={{ top: 4, right: 0, bottom: 0, left: -20 }}>
+              <defs>
+                <linearGradient id="gResolved" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#34d399" stopOpacity={0.2} />
+                  <stop offset="100%" stopColor="#34d399" stopOpacity={0} />
+                </linearGradient>
+                <linearGradient id="gEscalated" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#f87171" stopOpacity={0.2} />
+                  <stop offset="100%" stopColor="#f87171" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e1e22" vertical={false} />
+              <XAxis dataKey="hour" tick={{ fill: "#3f3f46", fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fill: "#3f3f46", fontSize: 10 }} axisLine={false} tickLine={false} />
+              <Tooltip content={<ChartTooltip />} />
+              <Area type="monotone" dataKey="resolved" name="Resueltas" stroke="#34d399" fill="url(#gResolved)" strokeWidth={1.5} />
+              <Area type="monotone" dataKey="escalated" name="Escaladas" stroke="#f87171" fill="url(#gEscalated)" strokeWidth={1.5} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Resolution funnel */}
+        <div style={{ background: "#111113", borderRadius: 12, border: "1px solid #1e1e22", padding: "16px 20px" }}>
+          <SectionLabel>Embudo de resolución</SectionLabel>
+          <div className="flex flex-col gap-2 mt-2">
+            {stats.resolution_funnel.map((step, i) => {
+              const maxCount = stats.resolution_funnel[0].count || 1;
+              const pct = Math.round((step.count / maxCount) * 100);
+              const colors = ["#818cf8", "#60a5fa", "#34d399", "#f87171"];
+              return (
+                <div key={i}>
+                  <div className="flex justify-between mb-1">
+                    <span className="text-[11px]" style={{ color: "#a1a1aa" }}>{step.stage}</span>
+                    <span className="text-[11px] font-mono tabular-nums" style={{ color: "#52525b" }}>{step.count}</span>
+                  </div>
+                  <div style={{ height: 4, borderRadius: 2, background: "#1e1e22" }}>
+                    <motion.div
+                      initial={{ width: 0 }} animate={{ width: `${pct}%` }} transition={{ duration: 0.8, delay: i * 0.1 }}
+                      style={{ height: 4, borderRadius: 2, background: colors[i] }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Row 3: Intent + Sentiment + Alarm types */}
+      <div className="grid grid-cols-3 gap-3 mb-6">
+        {/* Intent distribution */}
+        <div style={{ background: "#111113", borderRadius: 12, border: "1px solid #1e1e22", padding: "16px 20px" }}>
+          <SectionLabel>Distribución por intención</SectionLabel>
+          <ResponsiveContainer width="100%" height={160}>
+            <PieChart>
+              <Pie data={intentData} cx="50%" cy="50%" innerRadius={40} outerRadius={65} paddingAngle={3} dataKey="value" stroke="none">
+                {intentData.map((d, i) => <Cell key={i} fill={d.fill} />)}
+              </Pie>
+              <Tooltip content={<ChartTooltip />} />
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="flex justify-center gap-4 mt-1">
+            {intentData.map((d, i) => (
+              <div key={i} className="flex items-center gap-1.5">
+                <div style={{ width: 6, height: 6, borderRadius: 2, background: d.fill }} />
+                <span className="text-[10px]" style={{ color: "#71717a" }}>{d.name} {d.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Sentiment */}
+        <div style={{ background: "#111113", borderRadius: 12, border: "1px solid #1e1e22", padding: "16px 20px" }}>
+          <SectionLabel>Sentimiento del llamante</SectionLabel>
+          <ResponsiveContainer width="100%" height={160}>
+            <PieChart>
+              <Pie data={sentimentData} cx="50%" cy="50%" innerRadius={40} outerRadius={65} paddingAngle={3} dataKey="value" stroke="none">
+                {sentimentData.map((d, i) => <Cell key={i} fill={d.fill} />)}
+              </Pie>
+              <Tooltip content={<ChartTooltip />} />
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="flex justify-center gap-4 mt-1">
+            {sentimentData.map((d, i) => (
+              <div key={i} className="flex items-center gap-1.5">
+                <div style={{ width: 6, height: 6, borderRadius: 3, background: d.fill }} />
+                <span className="text-[10px]" style={{ color: "#71717a" }}>{d.name} {d.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Alarm types */}
+        <div style={{ background: "#111113", borderRadius: 12, border: "1px solid #1e1e22", padding: "16px 20px" }}>
+          <SectionLabel>Tipos de alarma</SectionLabel>
+          {stats.alarm_types.length > 0 ? (
+            <div className="flex flex-col gap-2 mt-1">
+              {stats.alarm_types.slice(0, 6).map((at, i) => {
+                const maxC = stats.alarm_types[0].count || 1;
+                return (
+                  <div key={i}>
+                    <div className="flex justify-between mb-1">
+                      <span className="text-[11px]" style={{ color: "#a1a1aa" }}>{at.type}</span>
+                      <span className="text-[11px] tabular-nums font-mono" style={{ color: "#52525b" }}>{at.count}</span>
+                    </div>
+                    <div style={{ height: 3, borderRadius: 2, background: "#1e1e22" }}>
+                      <div style={{ height: 3, borderRadius: 2, width: `${(at.count / maxC) * 100}%`, background: CHART_COLORS[i % CHART_COLORS.length], transition: "width 0.6s" }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-[11px] mt-4" style={{ color: "#3f3f46" }}>Sin datos de alarma</div>
+          )}
+        </div>
+      </div>
+
+      {/* Row 4: Zones + Top Evalink Actions + Duration by intent */}
+      <div className="grid grid-cols-3 gap-3">
+        {/* Zone performance */}
+        <div style={{ background: "#111113", borderRadius: 12, border: "1px solid #1e1e22", padding: "16px 20px" }}>
+          <SectionLabel>Rendimiento por zona</SectionLabel>
+          <div className="flex flex-col gap-2.5 mt-1">
+            {stats.zones.slice(0, 8).map((z, i) => {
+              const pctResolved = z.calls > 0 ? Math.round((z.resolved / z.calls) * 100) : 0;
+              return (
+                <div key={i} className="flex items-center justify-between">
+                  <span className="text-[11px] truncate flex-1" style={{ color: "#a1a1aa" }}>{z.zone}</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-[10px] tabular-nums" style={{ color: "#52525b" }}>{z.calls} llamadas</span>
+                    <span className="text-[10px] tabular-nums px-1 py-0.5 rounded"
+                      style={{ background: pctResolved >= 80 ? "#34d39910" : pctResolved >= 50 ? "#fbbf2410" : "#f8717110",
+                               color: pctResolved >= 80 ? "#34d399" : pctResolved >= 50 ? "#fbbf24" : "#f87171" }}>
+                      {pctResolved}%
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Top Evalink actions */}
+        <div style={{ background: "#111113", borderRadius: 12, border: "1px solid #1e1e22", padding: "16px 20px" }}>
+          <SectionLabel>Acciones Evalink más usadas</SectionLabel>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={stats.top_actions.slice(0, 6)} layout="vertical" margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
+              <XAxis type="number" hide />
+              <YAxis type="category" dataKey="action" width={120} tick={{ fill: "#52525b", fontSize: 10 }}
+                axisLine={false} tickLine={false} tickFormatter={(v: string) => v.split(".")[1] || v} />
+              <Bar dataKey="count" radius={[0, 4, 4, 0]} barSize={14}>
+                {stats.top_actions.slice(0, 6).map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} fillOpacity={0.7} />)}
+              </Bar>
+              <Tooltip content={<ChartTooltip />} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Duration by intent */}
+        <div style={{ background: "#111113", borderRadius: 12, border: "1px solid #1e1e22", padding: "16px 20px" }}>
+          <SectionLabel>Duración media por tipo</SectionLabel>
+          <div className="flex flex-col gap-4 mt-3">
+            {stats.avg_duration_by_intent.map((d, i) => (
+              <div key={i} className="flex items-center gap-3">
+                <div className="flex items-center justify-center" style={{ width: 32, height: 32, borderRadius: 8, background: `${INTENT_COLORS[d.intent]}12`, color: INTENT_COLORS[d.intent], fontSize: 11, fontWeight: 600 }}>
+                  {d.intent[0].toUpperCase()}
+                </div>
+                <div className="flex-1">
+                  <div className="text-[11px]" style={{ color: "#a1a1aa" }}>{intentLabel(d.intent)}</div>
+                  <div className="text-[18px] font-light tabular-nums" style={{ color: INTENT_COLORS[d.intent] }}>{fmt(d.avg)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Dashboard ───────────────────────────────────────────────
 export default function Dashboard() {
   const { calls, stats, connected } = useLiveCalls();
   const [selectedCall, setSelectedCall] = useState<CallEvent | null>(null);
+  const [view, setView] = useState<"actividad" | "analisis">("actividad");
   const [filter, setFilter] = useState<"all" | "tecnica" | "operativa" | "escalated">("all");
 
   const filteredCalls = calls.filter((c) => {
@@ -229,171 +375,118 @@ export default function Dashboard() {
     return true;
   });
 
-  const hourlyData = stats?.calls_per_hour.slice(6, 22).map((h) => ({
-    label: h.hour,
-    value: h.count,
-    color: "#818cf8",
-  })) || [];
-
   return (
     <div className="flex flex-col h-screen">
-      {/* --- Top bar --- */}
-      <header className="flex items-center justify-between shrink-0" style={{ height: 52, padding: "0 20px", borderBottom: "1px solid #1e1e22" }}>
-        <div className="flex items-center gap-4">
-          {/* Prosegur text */}
-          <span className="text-[14px] font-semibold tracking-tight" style={{ color: "#fafafa" }}>PROSEGUR</span>
-          <div style={{ width: 1, height: 16, background: "#27272a" }} />
-          {/* iSOC */}
-          <span className="text-[14px] font-semibold" style={{ color: "#818cf8" }}>iSOC</span>
-          <div style={{ width: 1, height: 16, background: "#27272a" }} />
-          <span className="text-[12px]" style={{ color: "#52525b" }}>Centro de Operaciones Inteligente</span>
-        </div>
+      {/* ── Header ── */}
+      <header className="flex items-center justify-between shrink-0" style={{ height: 48, padding: "0 20px", borderBottom: "1px solid #1e1e22" }}>
+        <div className="flex items-center gap-3">
+          <span className="text-[13px] font-semibold tracking-tight">PROSEGUR</span>
+          <div style={{ width: 1, height: 14, background: "#27272a" }} />
+          <span className="text-[13px] font-semibold" style={{ color: "#818cf8" }}>iSOC</span>
+          <div style={{ width: 1, height: 14, background: "#27272a" }} />
 
-        <div className="flex items-center gap-4">
-          {/* Live indicator */}
-          <div className="flex items-center gap-2">
-            <div
-              style={{
-                width: 6, height: 6, borderRadius: 3,
-                background: connected ? "#34d399" : "#f87171",
-                animation: connected ? "live-pulse 2s ease-in-out infinite" : "none",
-              }}
-            />
-            <span className="text-[11px]" style={{ color: connected ? "#34d399" : "#f87171" }}>
-              {connected ? "EN VIVO" : "RECONECTANDO"}
-            </span>
-          </div>
-          <div style={{ width: 1, height: 16, background: "#27272a" }} />
-          {/* HappyRobot */}
-          <span className="text-[11px]" style={{ color: "#3f3f46" }}>Powered by <span style={{ color: "#52525b" }}>HappyRobot</span></span>
-        </div>
-      </header>
-
-      {/* --- Main content --- */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* --- Left: Stats + Feed --- */}
-        <div className="flex flex-col flex-1 min-w-0">
-          {/* Stats row */}
-          <div className="shrink-0" style={{ padding: "24px 24px 0" }}>
-            {stats && (
-              <div className="flex items-start gap-10">
-                <Stat label="Llamadas hoy" value={stats.total_calls_today} />
-                <Stat label="Resolución automática" value={`${stats.auto_resolved_pct}%`} accent="#34d399" />
-                <Stat label="Identificación auto." value={`${stats.auto_identified_pct}%`} accent="#818cf8" />
-                <Stat label="Duración media" value={formatDuration(stats.avg_duration_seconds)} />
-                <Stat label="Escaladas" value={`${stats.escalated_pct}%`} accent={stats.escalated_pct > 20 ? "#f87171" : "#a1a1aa"} />
-                <div className="flex flex-col gap-1 ml-auto">
-                  <span className="text-[11px] uppercase tracking-widest" style={{ color: "#71717a" }}>Volumen por hora</span>
-                  <MiniBar data={hourlyData} maxH={36} />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Distribution bars */}
-          {stats && (
-            <div className="shrink-0 flex items-center gap-6" style={{ padding: "20px 24px 0" }}>
-              {/* Intent distribution */}
-              <div className="flex items-center gap-2">
-                <span className="text-[11px]" style={{ color: "#52525b" }}>Intención:</span>
-                {(["tecnica", "operativa", "otra"] as const).map((intent) => {
-                  const total = stats.calls_by_intent.tecnica + stats.calls_by_intent.operativa + stats.calls_by_intent.otra || 1;
-                  const pct = Math.round((stats.calls_by_intent[intent] / total) * 100);
-                  const colors = { tecnica: "#60a5fa", operativa: "#fbbf24", otra: "#71717a" };
-                  return (
-                    <div key={intent} className="flex items-center gap-1">
-                      <div style={{ width: 6, height: 6, borderRadius: 2, background: colors[intent] }} />
-                      <span className="text-[11px]" style={{ color: "#a1a1aa" }}>{intentLabel(intent)} {pct}%</span>
-                    </div>
-                  );
-                })}
-              </div>
-              <div style={{ width: 1, height: 12, background: "#1e1e22" }} />
-              {/* Sentiment distribution */}
-              <div className="flex items-center gap-2">
-                <span className="text-[11px]" style={{ color: "#52525b" }}>Sentimiento:</span>
-                {(["positivo", "neutral", "negativo"] as const).map((s) => {
-                  const total = stats.sentiment_breakdown.positivo + stats.sentiment_breakdown.neutral + stats.sentiment_breakdown.negativo || 1;
-                  const pct = Math.round((stats.sentiment_breakdown[s] / total) * 100);
-                  const colors = { positivo: "#34d399", neutral: "#a1a1aa", negativo: "#f87171" };
-                  return (
-                    <div key={s} className="flex items-center gap-1">
-                      <div style={{ width: 6, height: 6, borderRadius: 3, background: colors[s] }} />
-                      <span className="text-[11px]" style={{ color: "#a1a1aa" }}>{s} {pct}%</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Filter tabs + feed */}
-          <div className="flex items-center gap-1 shrink-0" style={{ padding: "16px 24px 0" }}>
-            {([
-              { key: "all", label: "Todas" },
-              { key: "tecnica", label: "Técnica" },
-              { key: "operativa", label: "Operativa" },
-              { key: "escalated", label: "Escaladas" },
-            ] as const).map((f) => (
-              <button
-                key={f.key}
-                onClick={() => setFilter(f.key)}
+          {/* View switcher */}
+          <div className="flex items-center gap-0.5 ml-2" style={{ background: "#111113", borderRadius: 6, padding: 2 }}>
+            {(["actividad", "analisis"] as const).map((v) => (
+              <button key={v} onClick={() => setView(v)}
                 style={{
-                  padding: "5px 12px",
-                  borderRadius: 6,
-                  border: "none",
-                  fontSize: 12,
-                  cursor: "pointer",
-                  background: filter === f.key ? "#1f1f23" : "transparent",
-                  color: filter === f.key ? "#fafafa" : "#52525b",
-                  transition: "all 0.15s",
-                }}
-              >
-                {f.label}
-                {f.key === "all" && stats && (
-                  <span className="ml-1 tabular-nums" style={{ color: "#3f3f46" }}>{filteredCalls.length}</span>
-                )}
+                  padding: "3px 10px", borderRadius: 4, border: "none", fontSize: 11, cursor: "pointer",
+                  background: view === v ? "#1f1f23" : "transparent",
+                  color: view === v ? "#fafafa" : "#52525b", transition: "all 0.15s",
+                }}>
+                {v === "actividad" ? "Actividad" : "Análisis"}
               </button>
             ))}
           </div>
-
-          {/* Call list */}
-          <div className="flex-1 overflow-y-auto" style={{ marginTop: 8 }}>
-            <AnimatePresence initial={false}>
-              {filteredCalls.map((call) => (
-                <CallRow
-                  key={call.id}
-                  call={call}
-                  onClick={() => setSelectedCall(call)}
-                  isSelected={selectedCall?.id === call.id}
-                />
-              ))}
-            </AnimatePresence>
-
-            {filteredCalls.length === 0 && (
-              <div className="flex items-center justify-center" style={{ padding: 60 }}>
-                <span className="text-[13px]" style={{ color: "#3f3f46" }}>Sin llamadas</span>
-              </div>
-            )}
-          </div>
         </div>
 
-        {/* --- Right: Detail panel --- */}
-        <AnimatePresence>
-          {selectedCall && (
-            <motion.div
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: 380, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="shrink-0 overflow-hidden"
-              style={{ background: "#0e0e10" }}
-            >
-              <CallDetail call={selectedCall} onClose={() => setSelectedCall(null)} />
-            </motion.div>
+        <div className="flex items-center gap-3">
+          {stats && (
+            <div className="flex items-center gap-4 mr-3">
+              <span className="text-[11px] tabular-nums" style={{ color: "#52525b" }}>
+                <span style={{ color: "#fafafa", fontWeight: 500 }}>{stats.total_calls_today}</span> llamadas
+              </span>
+              <span className="text-[11px] tabular-nums" style={{ color: "#34d399" }}>{stats.auto_resolved_pct}% auto</span>
+            </div>
           )}
-        </AnimatePresence>
-      </div>
+          <div className="flex items-center gap-1.5">
+            <div style={{
+              width: 6, height: 6, borderRadius: 3,
+              background: connected ? "#34d399" : "#f87171",
+              animation: connected ? "live-pulse 2s ease-in-out infinite" : "none",
+            }} />
+            <span className="text-[10px] uppercase tracking-widest" style={{ color: connected ? "#34d399" : "#f87171" }}>
+              {connected ? "Live" : "..."}
+            </span>
+          </div>
+          <div style={{ width: 1, height: 14, background: "#1e1e22" }} />
+          <span className="text-[10px]" style={{ color: "#27272a" }}>Powered by HappyRobot</span>
+        </div>
+      </header>
+
+      {/* ── Content ── */}
+      {view === "analisis" && stats ? (
+        <AnalyticsView stats={stats} />
+      ) : (
+        <div className="flex flex-1 overflow-hidden">
+          {/* Feed */}
+          <div className="flex flex-col flex-1 min-w-0">
+            {/* Quick stats bar */}
+            {stats && (
+              <div className="shrink-0 flex items-center gap-6" style={{ padding: "12px 20px", borderBottom: "1px solid #111113" }}>
+                {[
+                  { l: "Resolución IA", v: `${stats.auto_resolved_pct}%`, c: "#34d399" },
+                  { l: "Identificación", v: `${stats.auto_identified_pct}%`, c: "#818cf8" },
+                  { l: "Duración media", v: fmt(stats.avg_duration_seconds) },
+                  { l: "Escaladas", v: `${stats.escalated_pct}%`, c: stats.escalated_pct > 20 ? "#f87171" : "#52525b" },
+                  { l: "Latencia IA", v: `${(stats.avg_latency_ms / 1000).toFixed(1)}s` },
+                ].map((s, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <span className="text-[10px]" style={{ color: "#3f3f46" }}>{s.l}</span>
+                    <span className="text-[12px] font-medium tabular-nums" style={{ color: s.c || "#71717a" }}>{s.v}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Filters */}
+            <div className="flex items-center gap-1 shrink-0" style={{ padding: "10px 20px 0" }}>
+              {([ { key: "all", label: "Todas" }, { key: "tecnica", label: "Técnica" }, { key: "operativa", label: "Operativa" }, { key: "escalated", label: "Escaladas" } ] as const).map((f) => (
+                <button key={f.key} onClick={() => setFilter(f.key)}
+                  style={{ padding: "4px 10px", borderRadius: 5, border: "none", fontSize: 11, cursor: "pointer",
+                    background: filter === f.key ? "#1f1f23" : "transparent", color: filter === f.key ? "#fafafa" : "#3f3f46", transition: "all 0.15s" }}>
+                  {f.label}
+                </button>
+              ))}
+              <span className="text-[10px] ml-2 tabular-nums" style={{ color: "#27272a" }}>{filteredCalls.length} resultados</span>
+            </div>
+
+            {/* Call list */}
+            <div className="flex-1 overflow-y-auto" style={{ marginTop: 6 }}>
+              <AnimatePresence initial={false}>
+                {filteredCalls.map((call) => (
+                  <CallRow key={call.id} call={call} onClick={() => setSelectedCall(call)} isSelected={selectedCall?.id === call.id} />
+                ))}
+              </AnimatePresence>
+              {filteredCalls.length === 0 && (
+                <div className="flex items-center justify-center" style={{ padding: 80 }}>
+                  <span className="text-[12px]" style={{ color: "#27272a" }}>Sin llamadas</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Detail panel */}
+          <AnimatePresence>
+            {selectedCall && (
+              <motion.div initial={{ width: 0, opacity: 0 }} animate={{ width: 380, opacity: 1 }} exit={{ width: 0, opacity: 0 }}
+                transition={{ duration: 0.2 }} className="shrink-0 overflow-hidden" style={{ background: "#0c0c0e" }}>
+                <CallDetail call={selectedCall} onClose={() => setSelectedCall(null)} />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      )}
     </div>
   );
 }

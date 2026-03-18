@@ -23,6 +23,9 @@ export async function POST(req: NextRequest) {
       transcript_summary: body.transcript_summary || "",
       evalink_actions: body.evalink_actions || [],
       workflow_run_id: body.workflow_run_id || body.run_id || "",
+      latency_ms: body.latency_ms || 0,
+      zone: body.zone || "Sin zona",
+      alarm_type: body.alarm_type || null,
     };
 
     addCall(call);

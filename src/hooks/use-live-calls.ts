@@ -10,48 +10,80 @@ export function useLiveCalls() {
   const [lastEvent, setLastEvent] = useState<Date | null>(null);
   const retriesRef = useRef(0);
 
-  const computeStats = useCallback((allCalls: CallEvent[]): DashboardStats => {
+  const recomputeStats = useCallback((allCalls: CallEvent[]) => {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const todayCalls = allCalls.filter((c) => new Date(c.timestamp) >= todayStart);
-    const total = todayCalls.length || 1;
+    const tc = allCalls.filter((c) => new Date(c.timestamp) >= todayStart);
+    const total = tc.length || 1;
 
-    const resolved = todayCalls.filter((c) => c.resolved && !c.escalated_to_human).length;
-    const identified = todayCalls.filter((c) => c.identified).length;
-    const escalated = todayCalls.filter((c) => c.escalated_to_human).length;
-    const avgDuration = todayCalls.reduce((s, c) => s + c.duration_seconds, 0) / total;
+    const resolved = tc.filter((c) => c.resolved && !c.escalated_to_human).length;
+    const identified = tc.filter((c) => c.identified).length;
+    const escalated = tc.filter((c) => c.escalated_to_human).length;
+    const avgDur = tc.reduce((s, c) => s + c.duration_seconds, 0) / total;
+    const avgLat = tc.reduce((s, c) => s + (c.latency_ms || 0), 0) / total;
 
     const byIntent = { tecnica: 0, operativa: 0, otra: 0 };
     const bySentiment = { positivo: 0, neutral: 0, negativo: 0 };
-    todayCalls.forEach((c) => { byIntent[c.intent]++; bySentiment[c.sentiment]++; });
+    tc.forEach((c) => { byIntent[c.intent]++; bySentiment[c.sentiment]++; });
 
-    const hourMap: Record<string, number> = {};
-    for (let h = 0; h < 24; h++) hourMap[`${h.toString().padStart(2, "0")}:00`] = 0;
-    todayCalls.forEach((c) => {
+    const hourMap: Record<string, { count: number; resolved: number; escalated: number }> = {};
+    for (let h = 0; h < 24; h++) hourMap[`${h.toString().padStart(2, "0")}:00`] = { count: 0, resolved: 0, escalated: 0 };
+    tc.forEach((c) => {
       const h = new Date(c.timestamp).getHours();
-      hourMap[`${h.toString().padStart(2, "0")}:00`]++;
+      const key = `${h.toString().padStart(2, "0")}:00`;
+      hourMap[key].count++;
+      if (c.resolved) hourMap[key].resolved++;
+      if (c.escalated_to_human) hourMap[key].escalated++;
     });
 
-    return {
-      total_calls_today: todayCalls.length,
+    const actionCount: Record<string, number> = {};
+    tc.forEach((c) => c.evalink_actions.forEach((a) => { actionCount[a] = (actionCount[a] || 0) + 1; }));
+    const topActions = Object.entries(actionCount).sort(([, a], [, b]) => b - a).slice(0, 8).map(([action, count]) => ({ action, count }));
+
+    const zoneMap: Record<string, { calls: number; resolved: number }> = {};
+    tc.forEach((c) => {
+      if (!zoneMap[c.zone]) zoneMap[c.zone] = { calls: 0, resolved: 0 };
+      zoneMap[c.zone].calls++;
+      if (c.resolved) zoneMap[c.zone].resolved++;
+    });
+
+    const alarmMap: Record<string, number> = {};
+    tc.forEach((c) => { if (c.alarm_type) alarmMap[c.alarm_type] = (alarmMap[c.alarm_type] || 0) + 1; });
+
+    const intentDur: Record<string, number[]> = { tecnica: [], operativa: [], otra: [] };
+    tc.forEach((c) => intentDur[c.intent].push(c.duration_seconds));
+
+    setStats({
+      total_calls_today: tc.length,
       auto_resolved_pct: Math.round((resolved / total) * 100),
-      avg_duration_seconds: Math.round(avgDuration),
+      avg_duration_seconds: Math.round(avgDur),
       auto_identified_pct: Math.round((identified / total) * 100),
       escalated_pct: Math.round((escalated / total) * 100),
+      avg_latency_ms: Math.round(avgLat),
       calls_by_intent: byIntent,
       sentiment_breakdown: bySentiment,
-      calls_per_hour: Object.entries(hourMap).map(([hour, count]) => ({ hour, count })),
-    };
+      calls_per_hour: Object.entries(hourMap).map(([hour, d]) => ({ hour, ...d })),
+      resolution_funnel: [
+        { stage: "Recibidas", count: tc.length },
+        { stage: "Identificadas", count: identified },
+        { stage: "IA resolvió", count: resolved },
+        { stage: "Escaladas", count: escalated },
+      ],
+      top_actions: topActions,
+      zones: Object.entries(zoneMap).map(([zone, d]) => ({ zone, ...d })).sort((a, b) => b.calls - a.calls),
+      alarm_types: Object.entries(alarmMap).map(([type, count]) => ({ type, count })).sort((a, b) => b.count - a.count),
+      avg_duration_by_intent: Object.entries(intentDur).map(([intent, d]) => ({
+        intent,
+        avg: d.length ? Math.round(d.reduce((a, b) => a + b, 0) / d.length) : 0,
+      })),
+    });
   }, []);
 
   useEffect(() => {
     fetch("/api/seed", { method: "POST" })
       .then(() => fetch("/api/calls"))
       .then((r) => r.json())
-      .then((data) => {
-        setCalls(data.calls);
-        setStats(computeStats(data.calls));
-      })
+      .then((data) => { setCalls(data.calls); recomputeStats(data.calls); })
       .catch(() => {});
 
     const connect = () => {
@@ -62,27 +94,24 @@ export function useLiveCalls() {
           const payload = JSON.parse(e.data);
           if (payload.type === "new_call") {
             setCalls((prev) => {
-              const next = [payload.call, ...prev].slice(0, 200);
-              setStats(computeStats(next));
+              const next = [payload.call, ...prev].slice(0, 300);
+              recomputeStats(next);
               return next;
             });
             setLastEvent(new Date());
           }
-        } catch {}
+        } catch { /* ignore */ }
       };
       es.onerror = () => {
-        setConnected(false);
-        es.close();
-        const delay = Math.min(1000 * 2 ** retriesRef.current, 30000);
-        retriesRef.current++;
-        setTimeout(connect, delay);
+        setConnected(false); es.close();
+        setTimeout(connect, Math.min(1000 * 2 ** retriesRef.current++, 30000));
       };
       return es;
     };
 
     const es = connect();
     return () => { es.close(); setConnected(false); };
-  }, [computeStats]);
+  }, [recomputeStats]);
 
   return { calls, stats, connected, lastEvent };
 }
