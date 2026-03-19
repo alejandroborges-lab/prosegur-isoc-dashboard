@@ -420,7 +420,7 @@ export default function Dashboard() {
             </span>
           </div>
           <div style={{ width: 1, height: 14, background: "#1e1e22" }} />
-          <span className="text-[10px]" style={{ color: "#27272a" }}>Powered by HappyRobot</span>
+          <span className="text-[10px]" style={{ color: "#71717a" }}>Powered by <span style={{ color: "#fafafa" }}>HappyRobot</span></span>
         </div>
       </header>
 
