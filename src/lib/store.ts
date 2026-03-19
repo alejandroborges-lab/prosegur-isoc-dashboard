@@ -1,7 +1,6 @@
 import { CallEvent, DashboardStats } from "./types";
 import { generateInitialData } from "./mock-data";
 
-// Auto-seed so Railway/production always has data on startup
 const calls: CallEvent[] = generateInitialData(64);
 const listeners: Set<(event: CallEvent) => void> = new Set();
 
@@ -21,24 +20,22 @@ export function subscribe(fn: (event: CallEvent) => void) {
 }
 
 export function getStats(): DashboardStats {
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const todayCalls = calls.filter((c) => new Date(c.timestamp) >= todayStart);
+  const tc = calls;
+  const total = tc.length || 1;
 
-  const total = todayCalls.length || 1;
-  const resolved = todayCalls.filter((c) => c.resolved && !c.escalated_to_human).length;
-  const identified = todayCalls.filter((c) => c.identified).length;
-  const escalated = todayCalls.filter((c) => c.escalated_to_human).length;
-  const avgDuration = todayCalls.reduce((s, c) => s + c.duration_seconds, 0) / total;
-  const avgLatency = todayCalls.reduce((s, c) => s + (c.latency_ms || 0), 0) / total;
+  const resolved = tc.filter((c) => c.resolved && !c.escalated_to_human).length;
+  const identified = tc.filter((c) => c.identified).length;
+  const escalated = tc.filter((c) => c.escalated_to_human).length;
+  const avgDuration = tc.reduce((s, c) => s + c.duration_seconds, 0) / total;
+  const avgLatency = tc.reduce((s, c) => s + (c.latency_ms || 0), 0) / total;
 
   const byIntent = { tecnica: 0, operativa: 0, otra: 0 };
   const bySentiment = { positivo: 0, neutral: 0, negativo: 0 };
-  todayCalls.forEach((c) => { byIntent[c.intent]++; bySentiment[c.sentiment]++; });
+  tc.forEach((c) => { byIntent[c.intent]++; bySentiment[c.sentiment]++; });
 
   const hourMap: Record<string, { count: number; resolved: number; escalated: number }> = {};
   for (let h = 0; h < 24; h++) hourMap[`${h.toString().padStart(2, "0")}:00`] = { count: 0, resolved: 0, escalated: 0 };
-  todayCalls.forEach((c) => {
+  tc.forEach((c) => {
     const h = new Date(c.timestamp).getHours();
     const key = `${h.toString().padStart(2, "0")}:00`;
     hourMap[key].count++;
@@ -47,31 +44,31 @@ export function getStats(): DashboardStats {
   });
 
   const resolutionFunnel = [
-    { stage: "Llamadas recibidas", count: todayCalls.length },
+    { stage: "Llamadas recibidas", count: tc.length },
     { stage: "Cliente identificado", count: identified },
     { stage: "Resueltas por IA", count: resolved },
     { stage: "Derivadas a operador", count: escalated },
   ];
 
   const actionCount: Record<string, number> = {};
-  todayCalls.forEach((c) => c.evalink_actions.forEach((a) => { actionCount[a] = (actionCount[a] || 0) + 1; }));
+  tc.forEach((c) => c.evalink_actions.forEach((a) => { actionCount[a] = (actionCount[a] || 0) + 1; }));
   const topActions = Object.entries(actionCount).sort(([, a], [, b]) => b - a).slice(0, 8).map(([action, count]) => ({ action, count }));
 
   const zoneMap: Record<string, { calls: number; resolved: number }> = {};
-  todayCalls.forEach((c) => {
+  tc.forEach((c) => {
     if (!zoneMap[c.zone]) zoneMap[c.zone] = { calls: 0, resolved: 0 };
     zoneMap[c.zone].calls++;
     if (c.resolved) zoneMap[c.zone].resolved++;
   });
 
   const alarmMap: Record<string, number> = {};
-  todayCalls.forEach((c) => { if (c.alarm_type) alarmMap[c.alarm_type] = (alarmMap[c.alarm_type] || 0) + 1; });
+  tc.forEach((c) => { if (c.alarm_type) alarmMap[c.alarm_type] = (alarmMap[c.alarm_type] || 0) + 1; });
 
   const intentDurations: Record<string, number[]> = { tecnica: [], operativa: [], otra: [] };
-  todayCalls.forEach((c) => intentDurations[c.intent].push(c.duration_seconds));
+  tc.forEach((c) => intentDurations[c.intent].push(c.duration_seconds));
 
   return {
-    total_calls_today: todayCalls.length,
+    total_calls_today: tc.length,
     auto_resolved_pct: Math.round((resolved / total) * 100),
     avg_duration_seconds: Math.round(avgDuration),
     auto_identified_pct: Math.round((identified / total) * 100),

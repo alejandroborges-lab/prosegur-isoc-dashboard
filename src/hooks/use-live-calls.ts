@@ -11,9 +11,8 @@ export function useLiveCalls() {
   const retriesRef = useRef(0);
 
   const recomputeStats = useCallback((allCalls: CallEvent[]) => {
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const tc = allCalls.filter((c) => new Date(c.timestamp) >= todayStart);
+    // Use ALL calls for demo (no timezone filter issues)
+    const tc = allCalls;
     const total = tc.length || 1;
 
     const resolved = tc.filter((c) => c.resolved && !c.escalated_to_human).length;
@@ -80,7 +79,6 @@ export function useLiveCalls() {
   }, []);
 
   useEffect(() => {
-    // Load initial data from server (which auto-seeds)
     fetch("/api/calls")
       .then((r) => r.json())
       .then((data) => { setCalls(data.calls); recomputeStats(data.calls); })
